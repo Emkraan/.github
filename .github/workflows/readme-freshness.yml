@@ -55,7 +55,6 @@ jobs:
           set -euo pipefail
 
           # Mechanical bot changes are README-neutral by nature: dependabot version
-<<<<<<< HEAD
           # bumps (incl. github-actions bumps that edit .github/workflows/*), the
           # deploy bot's pin-backs, and Renovate's dependency updates. Exempt them
           # so the required check never blocks their auto-merge. Human PRs still go
