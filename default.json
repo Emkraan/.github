@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "schedule": ["before 6am on monday"],
+  "timezone": "America/New_York",
+  "labels": ["dependencies"],
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 8,
+  "packageRules": [
+    {
+      "description": "Group and automerge GitHub Actions non-major updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group React ecosystem updates",
+      "matchPackagePatterns": ["^react", "^@types/react"],
+      "groupName": "react-ecosystem"
+    },
+    {
+      "description": "Group Vite and its plugins",
+      "matchPackagePatterns": ["^vite", "^@vitejs/"],
+      "groupName": "vite"
+    },
+    {
+      "description": "Group TypeScript toolchain",
+      "matchPackageNames": ["typescript", "tslib"],
+      "groupName": "typescript"
+    },
+    {
+      "description": "Group FastAPI + uvicorn runtime pair",
+      "matchPackageNames": ["fastapi", "uvicorn"],
+      "groupName": "fastapi-uvicorn"
+    },
+    {
+      "description": "Automerge devDependency minor and patch updates",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "enabled": true
+  }
+}
