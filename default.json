@@ -3,10 +3,11 @@
   "extends": [
     "config:recommended",
     ":dependencyDashboard",
-    ":semanticCommits"
+    ":semanticCommits",
+    "mergeConfidence:all-badges"
   ],
   "schedule": [
-    "before 6am on monday"
+    "before 6am"
   ],
   "timezone": "America/New_York",
   "labels": [
@@ -73,6 +74,58 @@
       "automergeType": "pr"
     },
     {
+      "description": "Automerge React ecosystem non-major updates (tier 1)",
+      "matchPackagePatterns": [
+        "^react",
+        "^@types/react"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Automerge Vite non-major updates (tier 1)",
+      "matchPackagePatterns": [
+        "^vite",
+        "^@vitejs/"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Automerge docker-compose non-major image updates (tier 1)",
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true,
+      "automergeType": "pr",
+      "groupName": "docker image updates"
+    },
+    {
+      "description": "Automerge Python non-major updates (tier 1)",
+      "matchManagers": [
+        "pip_requirements",
+        "pep621"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
       "description": "Label npm and pip major updates for the Eir agent-gate (tier 3)",
       "matchManagers": [
         "npm",
@@ -104,5 +157,6 @@
       "security"
     ],
     "enabled": true
-  }
+  },
+  "minimumReleaseAge": "3 days"
 }
