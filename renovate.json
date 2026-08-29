@@ -5,50 +5,104 @@
     ":dependencyDashboard",
     ":semanticCommits"
   ],
-  "schedule": ["before 6am on monday"],
+  "schedule": [
+    "before 6am on monday"
+  ],
   "timezone": "America/New_York",
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "prHourlyLimit": 4,
   "prConcurrentLimit": 8,
   "packageRules": [
     {
       "description": "Group and automerge GitHub Actions non-major updates",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "automerge": true,
       "automergeType": "pr",
       "groupName": "github-actions"
     },
     {
       "description": "Group React ecosystem updates",
-      "matchPackagePatterns": ["^react", "^@types/react"],
+      "matchPackagePatterns": [
+        "^react",
+        "^@types/react"
+      ],
       "groupName": "react-ecosystem"
     },
     {
       "description": "Group Vite and its plugins",
-      "matchPackagePatterns": ["^vite", "^@vitejs/"],
+      "matchPackagePatterns": [
+        "^vite",
+        "^@vitejs/"
+      ],
       "groupName": "vite"
     },
     {
       "description": "Group TypeScript toolchain",
-      "matchPackageNames": ["typescript", "tslib"],
+      "matchPackageNames": [
+        "typescript",
+        "tslib"
+      ],
       "groupName": "typescript"
     },
     {
       "description": "Group FastAPI + uvicorn runtime pair",
-      "matchPackageNames": ["fastapi", "uvicorn"],
+      "matchPackageNames": [
+        "fastapi",
+        "uvicorn"
+      ],
       "groupName": "fastapi-uvicorn"
     },
     {
       "description": "Automerge devDependency minor and patch updates",
-      "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchDepTypes": [
+        "devDependencies"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "automerge": true,
       "automergeType": "pr"
+    },
+    {
+      "description": "Label npm and pip major updates for the Eir agent-gate (tier 3)",
+      "matchManagers": [
+        "npm",
+        "pip_requirements",
+        "pep621"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "addLabels": [
+        "renovate-major"
+      ]
+    },
+    {
+      "description": "Label docker-compose major image updates for the Eir agent-gate (tier 3)",
+      "matchManagers": [
+        "docker-compose"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "addLabels": [
+        "renovate-major-infra"
+      ]
     }
   ],
   "vulnerabilityAlerts": {
-    "labels": ["security"],
+    "labels": [
+      "security"
+    ],
     "enabled": true
   }
 }
