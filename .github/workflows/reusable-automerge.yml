@@ -25,10 +25,14 @@ name: reusable-automerge
 # read checks: "Resource not accessible by integration"). An unreadable rollup fails
 # closed: the PR is left for the next event or sweep, with a warning.
 #
-# IDENTITY: mutations use the deploy-bot App token when `app-client-id` is given, so the
-# merge push triggers downstream push workflows (a GITHUB_TOKEN push never does, which
-# would silently skip path-filtered deploys) and GitHub honours `Closes #N`. The App has
-# no workflows:write, so a PR touching .github/workflows/** is retried as GITHUB_TOKEN.
+# IDENTITY: every repo merges as the emkraan-deploy-bot App (required inputs, standardized
+# 2026-09-23), so the merge push triggers downstream push workflows (a GITHUB_TOKEN push
+# never does, which silently skipped deploys) and GitHub honours `Closes #N`. GITHUB_TOKEN
+# is used only (a) to read the check rollup (the App has no checks permission) and (b) as
+# the automatic retry for a PR touching .github/workflows/**. The App deliberately has NO
+# workflows:write: its key is an org secret visible to every repo, so workflows:write on
+# it would let any repo's workflow rewrite CI (and reach every secret) org-wide. If the
+# App token cannot be minted the run still falls back to GITHUB_TOKEN with a warning.
 #
 # TRIGGERS the caller must declare (see the caller template in the standard):
 #   pull_request [opened, reopened, synchronize, ready_for_review, closed]
@@ -46,13 +50,13 @@ on:
         type: string
         default: '"ubuntu-latest"'
       app-client-id:
-        description: Deploy-bot GitHub App client/app id. Empty = act as GITHUB_TOKEN only.
+        description: Deploy-bot GitHub App client/app id (org variable DEPLOY_APP_ID). Required so every repo merges as the same identity.
         type: string
-        default: ""
+        required: true
     secrets:
       app-private-key:
-        description: Deploy-bot GitHub App private key. Required when app-client-id is set.
-        required: false
+        description: Deploy-bot GitHub App private key (org secret DEPLOY_APP_PRIVATE_KEY).
+        required: true
 
 jobs:
   automerge:
