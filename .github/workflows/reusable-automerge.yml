@@ -1,0 +1,251 @@
+name: reusable-automerge
+
+# THE single fleet implementation of PR auto-merge. Every Emkraan repo calls this from a
+# thin `automerge.yml` that owns only its TRIGGERS (which differ per repo: the
+# `workflow_run` list names that repo's own CI workflows), its concurrency group and its
+# token permissions. All merge logic lives here so it cannot drift. Before this existed,
+# 13 hand-copied automerge.yml files had drifted into 5 variants with 3 different
+# readiness rules, and a readied draft stranded open on the repos that lacked the fix
+# (apollo#1037, 2026-09-22). Standard: apollo docs/standards/github-repo-standard.md S8.
+#
+# Works on plain repos (merge directly, or enable native auto-merge while checks run) and
+# on merge-queue repos (enqueuePullRequest, since native auto-merge does not reliably
+# enqueue). Branch protection and rulesets still fully apply.
+#
+# READINESS (the fix): a PR is ready when mergeStateStatus is CLEAN, or UNSTABLE where
+# every non-green check on the head commit belongs to the automerge workflow itself.
+# While this job runs it IS a non-required check on the head commit, so the PR reads
+# UNSTABLE for this run's whole life and can never read CLEAN. Gating on CLEAN alone
+# therefore deadlocks against itself: a draft marked ready after its checks went green
+# fires only this workflow, sees UNSTABLE, is refused native auto-merge ("unstable
+# status"), and nothing ever retries. Plain `UNSTABLE` is not accepted either, because
+# UNSTABLE also means a failing or pending NON-required check (for example a
+# version-validate or gitleaks job), and a repo whose checks are not all required would
+# then merge red. The rollup is read with GITHUB_TOKEN (the deploy-bot App token cannot
+# read checks: "Resource not accessible by integration"). An unreadable rollup fails
+# closed: the PR is left for the next event or sweep, with a warning.
+#
+# IDENTITY: mutations use the deploy-bot App token when `app-client-id` is given, so the
+# merge push triggers downstream push workflows (a GITHUB_TOKEN push never does, which
+# would silently skip path-filtered deploys) and GitHub honours `Closes #N`. The App has
+# no workflows:write, so a PR touching .github/workflows/** is retried as GITHUB_TOKEN.
+#
+# TRIGGERS the caller must declare (see the caller template in the standard):
+#   pull_request [opened, reopened, synchronize, ready_for_review, closed]
+#   pull_request_review [submitted]
+#   workflow_run [completed] on the repo's CI workflow NAMES (not job names)
+#   schedule (safety-net sweep) + workflow_dispatch (manual "unstick now")
+# NOT check_suite: GitHub creates no workflow runs from GITHUB_TOKEN-triggered events,
+# so check_suite.completed never fires for Actions CI.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runner spec, e.g. "\"ubuntu-latest\"" (public repos) or "[\"self-hosted\",\"forge\"]" (private repos).'
+        type: string
+        default: '"ubuntu-latest"'
+      app-client-id:
+        description: Deploy-bot GitHub App client/app id. Empty = act as GITHUB_TOKEN only.
+        type: string
+        default: ""
+    secrets:
+      app-private-key:
+        description: Deploy-bot GitHub App private key. Required when app-client-id is set.
+        required: false
+
+jobs:
+  automerge:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      # Best effort on purpose: if minting fails the script falls back to GITHUB_TOKEN.
+      # A missing app token must never stop PRs merging.
+      - name: Mint deploy-bot app token (best effort)
+        id: app-token
+        if: inputs.app-client-id != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.app-private-key }}
+
+      - uses: actions/github-script@v9
+        env:
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIMARY_IS_APP: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token != null }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          script: |
+            const {owner, repo} = context.repo;
+            const primaryIsApp = process.env.PRIMARY_IS_APP === 'true';
+            const fallbackToken = process.env.FALLBACK_TOKEN || '';
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            core.info(`acting as ${primaryIsApp ? 'deploy-bot app' : 'github-actions'}; workflow="${context.workflow}" run=${context.runId}`);
+
+            // Raw fetch as GITHUB_TOKEN. Used for the check rollup (the App token cannot read
+            // checks) and as the retry identity for mutations the App is refused.
+            async function graphqlAsToken(query, variables) {
+              const res = await fetch('https://api.github.com/graphql', {
+                method: 'POST',
+                headers: {authorization: `token ${fallbackToken}`, 'content-type': 'application/json', 'user-agent': 'emkraan-automerge'},
+                body: JSON.stringify({query, variables}),
+              });
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok || body.errors || !body.data) throw new Error(`HTTP ${res.status}: ${JSON.stringify(body.errors || body)}`);
+              return body.data;
+            }
+
+            async function mutate(query, vars, what) {
+              try {
+                await github.graphql(query, vars);
+                core.info(`${what} (as ${primaryIsApp ? 'deploy-bot app' : 'github-actions'})`);
+                return;
+              } catch (e) {
+                if (!primaryIsApp || !fallbackToken) throw e;
+                core.warning(`${what} refused for the app token (${e.message}); retrying as github-actions`);
+              }
+              await graphqlAsToken(query, vars);
+              core.info(`${what} (as github-actions; a linked Closes #N will NOT fire)`);
+            }
+
+            // ---- Merged PR: close linked issues explicitly. GitHub does not honour
+            // `Closes #N` when github-actions[bot] merged, so do it in the open (apollo#645).
+            if (context.eventName === 'pull_request' && context.payload.action === 'closed') {
+              const pr = context.payload.pull_request;
+              if (!pr.merged) { core.info(`#${pr.number}: closed without merging`); return; }
+              let linked = [];
+              try {
+                const d = await github.graphql(`query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){
+                  pullRequest(number:$n){ closingIssuesReferences(first:20){ nodes{ number state } } } } }`, {o: owner, r: repo, n: pr.number});
+                linked = d.repository.pullRequest.closingIssuesReferences.nodes || [];
+              } catch (e) { core.warning(`#${pr.number}: could not read linked issues (${e.message})`); return; }
+              for (const issue of linked.filter(i => i.state === 'OPEN')) {
+                try {
+                  await github.rest.issues.update({owner, repo, issue_number: issue.number, state: 'closed', state_reason: 'completed'});
+                  core.info(`#${pr.number}: closed linked issue #${issue.number}`);
+                } catch (e) { core.warning(`#${pr.number}: could not close #${issue.number} (${e.message})`); }
+              }
+              if (linked.length === 0) core.info(`#${pr.number}: no linked issues`);
+              return;
+            }
+
+            // ---- Candidate PRs from whatever event fired.
+            let numbers = [];
+            if (context.eventName === 'pull_request' || context.eventName === 'pull_request_review') {
+              numbers = [context.payload.pull_request.number];
+            } else if (context.eventName === 'workflow_run') {
+              const run = context.payload.workflow_run;
+              numbers = (run.pull_requests || []).map(p => p.number);
+              if (numbers.length === 0 && run.head_sha) {
+                // pull_requests is empty for fork PRs and sometimes for same-repo ones too.
+                const open = await github.paginate(github.rest.pulls.list, {owner, repo, state: 'open', per_page: 100});
+                numbers = open.filter(p => p.head.sha === run.head_sha).map(p => p.number);
+                core.info(numbers.length ? `head_sha matched #${numbers.join(', #')}` : `no open PR at ${run.head_sha}`);
+              }
+            } else if (context.eventName === 'schedule' || context.eventName === 'workflow_dispatch') {
+              // Safety-net sweep: every open non-draft PR. Recovers anything stranded with no
+              // pending event (e.g. fell out of a merge queue after enqueue).
+              const open = await github.paginate(github.rest.pulls.list, {owner, repo, state: 'open', per_page: 100});
+              numbers = open.filter(p => !p.draft).map(p => p.number);
+            }
+            if (numbers.length === 0) { core.info('no candidate PRs'); return; }
+
+            const Q = `query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){
+              mergeQueue{ id }
+              pullRequest(number:$n){ id number isDraft state merged isInMergeQueue mergeStateStatus mergeable headRefOid }
+            } }`;
+            const ROLLUP = `query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ pullRequest(number:$n){
+              commits(last:1){ nodes{ commit{ oid statusCheckRollup{ contexts(first:100){ nodes{
+                __typename
+                ... on CheckRun { name status conclusion checkSuite{ workflowRun{ databaseId workflow{ name } } } }
+                ... on StatusContext { context state }
+              } } } } } }
+            } } }`;
+            const ENQUEUE = `mutation($id:ID!){ enqueuePullRequest(input:{pullRequestId:$id}){ mergeQueueEntry{ position } } }`;
+            const AUTOMERGE = `mutation($id:ID!){ enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:SQUASH}){ pullRequest{ number } } }`;
+            const MERGE = `mutation($id:ID!,$oid:GitObjectID!){ mergePullRequest(input:{pullRequestId:$id, mergeMethod:SQUASH, expectedHeadOid:$oid}){ pullRequest{ number merged } } }`;
+
+            const GREEN = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);
+            // Check runs of THIS workflow (any automerge run, not only this one: two automerge
+            // runs on one SHA, e.g. pull_request + workflow_run, would otherwise each wait on
+            // the other forever).
+            const isSelf = c => c.__typename === 'CheckRun' && c.checkSuite && c.checkSuite.workflowRun &&
+              (c.checkSuite.workflowRun.databaseId === context.runId ||
+               (c.checkSuite.workflowRun.workflow && c.checkSuite.workflowRun.workflow.name === context.workflow));
+
+            // Returns {ready, why}. Never throws.
+            async function readiness(pr) {
+              if (pr.state !== 'OPEN' || pr.merged || pr.isDraft) return {ready: false, why: 'not an open ready PR'};
+              const s = pr.mergeStateStatus;
+              if (s === 'CLEAN') return {ready: true, why: 'CLEAN'};
+              if (s !== 'UNSTABLE') return {ready: false, why: s};   // BLOCKED / DIRTY / BEHIND / UNKNOWN / HAS_HOOKS
+              let d;
+              try { d = await graphqlAsToken(ROLLUP, {o: owner, r: repo, n: pr.number}); }
+              catch (e) { core.warning(`#${pr.number}: UNSTABLE and check rollup unreadable (${e.message}); failing closed`); return {ready: false, why: 'rollup unreadable'}; }
+              const node = d.repository.pullRequest.commits.nodes[0];
+              if (!node || node.commit.oid !== pr.headRefOid) return {ready: false, why: 'rollup not at head'};
+              const ctx = (node.commit.statusCheckRollup && node.commit.statusCheckRollup.contexts.nodes) || [];
+              const blocking = ctx.filter(c => !isSelf(c)).filter(c =>
+                c.__typename === 'CheckRun' ? !(c.status === 'COMPLETED' && GREEN.has(c.conclusion)) : c.state !== 'SUCCESS');
+              if (blocking.length === 0) return {ready: true, why: 'UNSTABLE only from automerge itself'};
+              const names = blocking.map(c => c.__typename === 'CheckRun' ? `${c.name}=${c.status === 'COMPLETED' ? c.conclusion : c.status}` : `${c.context}=${c.state}`);
+              return {ready: false, why: `UNSTABLE from non-required check(s): ${names.join(', ')}`};
+            }
+
+            async function readPr(n) {
+              let data;
+              for (let i = 0; i < 6; i++) {   // mergeStateStatus is computed async
+                data = await github.graphql(Q, {o: owner, r: repo, n});
+                if (data.repository.pullRequest.mergeStateStatus !== 'UNKNOWN') break;
+                await sleep(5000);
+              }
+              return {pr: data.repository.pullRequest, hasQueue: !!data.repository.mergeQueue};
+            }
+
+            for (const n of numbers) {
+              const {pr, hasQueue} = await readPr(n);
+              if (!pr || pr.state !== 'OPEN' || pr.merged) { core.info(`#${n}: not an open PR`); continue; }
+              if (pr.isDraft) { core.info(`#${n}: draft, skipping`); continue; }
+              if (pr.isInMergeQueue) { core.info(`#${n}: already in merge queue`); continue; }
+              const r = await readiness(pr);
+              core.info(`#${n}: mergeStateStatus=${pr.mergeStateStatus} ready=${r.ready} (${r.why})`);
+
+              if (hasQueue) {
+                if (!r.ready) { core.info(`#${n}: waiting for a later event`); continue; }
+                try { await mutate(ENQUEUE, {id: pr.id}, `#${n}: enqueued`); }
+                catch (e) { core.warning(`#${n}: enqueue not accepted (${e.message})`); }
+                continue;
+              }
+
+              if (r.ready) {
+                try { await mutate(MERGE, {id: pr.id, oid: pr.headRefOid}, `#${n}: merged (${r.why})`); continue; }
+                catch (e) { core.warning(`#${n}: direct merge failed (${e.message}); trying auto-merge`); }
+              }
+              if (pr.mergeStateStatus === 'DIRTY') { core.warning(`#${n}: DIRTY (merge conflict), needs a rebase`); continue; }
+              try { await mutate(AUTOMERGE, {id: pr.id}, `#${n}: auto-merge enabled`); continue; }
+              catch (e) {
+                // "clean status" is the race: state was read before checks finished, and by the
+                // time of the mutation there is nothing left to wait for. Poll and merge
+                // directly. Any other refusal (e.g. "unstable status" on a PR with a red
+                // non-required check) is left for the next workflow_run or the sweep.
+                if (!/clean status/i.test(e.message)) {
+                  core.warning(`#${n}: not merged (${r.why}); auto-merge refused (${e.message}). The next CI completion or the sweep will retry.`);
+                  continue;
+                }
+                core.info(`#${n}: auto-merge refused as already clean; polling to merge directly`);
+              }
+              let done = false, last = null;
+              for (let i = 0; i < 6 && !done; i++) {
+                await sleep(10000);
+                try {
+                  const fresh = (await readPr(n)).pr;
+                  last = fresh.mergeStateStatus;
+                  if (fresh.state !== 'OPEN' || fresh.merged) { core.info(`#${n}: no longer open`); done = true; break; }
+                  if (last === 'DIRTY' || last === 'BLOCKED') break;
+                  const fr = await readiness(fresh);
+                  if (fr.ready) { await mutate(MERGE, {id: fresh.id, oid: fresh.headRefOid}, `#${n}: merged after poll (${fr.why})`); done = true; }
+                  else last = `${last} (${fr.why})`;
+                } catch (e2) { core.warning(`#${n}: poll ${i + 1} failed (${e2.message})`); }
+              }
+              if (!done) core.warning(`#${n}: NOT merged; last state ${last}. The next CI completion or the sweep will retry.`);
+            }
