@@ -45,7 +45,7 @@ jobs:
     uses: Emkraan/.github/.github/workflows/reusable-automerge.yml@main
     with:
       runs-on: '["self-hosted","forge"]'           # private repos; public repos: '"ubuntu-latest"'
-      app-client-id: ${{ vars.DEPLOY_APP_ID }}      # only repos whose merges must trigger deploys
+      app-client-id: ${{ vars.DEPLOY_APP_ID }}      # required: every repo merges as emkraan-deploy-bot
     secrets:
       app-private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
 ```
