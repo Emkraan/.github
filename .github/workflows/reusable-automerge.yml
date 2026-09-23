@@ -29,10 +29,13 @@ name: reusable-automerge
 # 2026-09-23), so the merge push triggers downstream push workflows (a GITHUB_TOKEN push
 # never does, which silently skipped deploys) and GitHub honours `Closes #N`. GITHUB_TOKEN
 # is used only (a) to read the check rollup (the App has no checks permission) and (b) as
-# the automatic retry for a PR touching .github/workflows/**. The App deliberately has NO
-# workflows:write: its key is an org secret visible to every repo, so workflows:write on
-# it would let any repo's workflow rewrite CI (and reach every secret) org-wide. If the
-# App token cannot be minted the run still falls back to GITHUB_TOKEN with a warning.
+# the automatic retry when GitHub refuses the App a merge mutation. Merge-queue ENQUEUE
+# never falls back to GITHUB_TOKEN: the queue's merge_group event would be attributed to
+# it and start no workflows, so the entry wedges at AWAITING_CHECKS. The App deliberately
+# has NO workflows:write: its key is an org secret visible to every repo, so that
+# permission would let any repo's workflow rewrite CI (and reach every secret) org-wide.
+# If the App token cannot be minted, plain-repo merges fall back to GITHUB_TOKEN with a
+# warning and merge-queue enqueues are skipped with a warning.
 #
 # TRIGGERS the caller must declare (see the caller template in the standard):
 #   pull_request [opened, reopened, synchronize, ready_for_review, closed]
@@ -216,8 +219,21 @@ jobs:
 
               if (hasQueue) {
                 if (!r.ready) { core.info(`#${n}: waiting for a later event`); continue; }
-                try { await mutate(ENQUEUE, {id: pr.id}, `#${n}: enqueued`); }
-                catch (e) { core.warning(`#${n}: enqueue not accepted (${e.message})`); }
+                // NEVER enqueue as GITHUB_TOKEN. The queue attributes the merge_group event to
+                // whoever enqueued, and GitHub starts no workflow runs from GITHUB_TOKEN-caused
+                // events, so a GITHUB_TOKEN entry gets no merge_group CI, never sees its required
+                // check, and sits AWAITING_CHECKS until the timeout. Verified 2026-09-23 across 18
+                // PRs in 3 repos: every github-actions enqueue formed zero merge_group runs, every
+                // human or deploy-bot enqueue formed one. (Repos whose CI also runs on `push`
+                // masked it: the queue's branch push is by github-merge-queue[bot].) So there is
+                // no GITHUB_TOKEN fallback here: an App-less or App-refused enqueue is skipped
+                // loudly and retried by the next event or sweep.
+                if (!primaryIsApp) {
+                  core.warning(`#${n}: ready but NOT enqueued: no deploy-bot app token, and a GITHUB_TOKEN enqueue forms no merge_group run (the entry would wedge). Fix the app token; the sweep will retry.`);
+                  continue;
+                }
+                try { await github.graphql(ENQUEUE, {id: pr.id}); core.info(`#${n}: enqueued (as deploy-bot app)`); }
+                catch (e) { core.warning(`#${n}: enqueue refused for the deploy-bot app (${e.message}); NOT retrying as GITHUB_TOKEN (it would wedge). The next event or the sweep will retry.`); }
                 continue;
               }
 
