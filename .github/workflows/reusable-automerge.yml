@@ -29,13 +29,25 @@ name: reusable-automerge
 # 2026-09-23), so the merge push triggers downstream push workflows (a GITHUB_TOKEN push
 # never does, which silently skipped deploys) and GitHub honours `Closes #N`. GITHUB_TOKEN
 # is used only (a) to read the check rollup (the App has no checks permission) and (b) as
-# the automatic retry when GitHub refuses the App a merge mutation. Merge-queue ENQUEUE
-# never falls back to GITHUB_TOKEN: the queue's merge_group event would be attributed to
-# it and start no workflows, so the entry wedges at AWAITING_CHECKS. The App deliberately
+# (c) to dispatch deploy workflows from the post-merge guard (workflow_dispatch is the one
+# event GitHub still starts runs for when GITHUB_TOKEN causes it). NO merge, auto-merge or
+# enqueue mutation ever runs as GITHUB_TOKEN: a GITHUB_TOKEN merge push triggers no push
+# workflows, so its deploys are silently skipped (emkraan-apps#1798: #1793 was merged as
+# github-actions after the App's merge hit a transient "Base branch was modified" race and
+# the old code retried as GITHUB_TOKEN). A transient refusal is retried as the App; any
+# other refusal is left for the next event or sweep. Merge-queue ENQUEUE likewise: the
+# queue's merge_group event would be attributed to GITHUB_TOKEN and start no workflows,
+# so the entry wedges at AWAITING_CHECKS. The App deliberately
 # has NO workflows:write: its key is an org secret visible to every repo, so that
 # permission would let any repo's workflow rewrite CI (and reach every secret) org-wide.
-# If the App token cannot be minted, plain-repo merges fall back to GITHUB_TOKEN with a
-# warning and merge-queue enqueues are skipped with a warning.
+# If the App token cannot be minted the job FAILS loudly; there is no GITHUB_TOKEN fallback.
+#
+# POST-MERGE GUARD: after every merge this job performs, and on every sweep for PRs merged
+# in the last 24h, the merge actor is verified. If a PR was merged by anyone other than the
+# deploy-bot App as github-actions (so its merge push started no workflows), every
+# push-triggered workflow on the default branch whose path filters match the PR's files and
+# that declares workflow_dispatch is dispatched, and the job emits an error and fails.
+# Callers must grant `actions: write` for the dispatch.
 #
 # TRIGGERS the caller must declare (see the caller template in the standard):
 #   pull_request [opened, reopened, synchronize, ready_for_review, closed]
@@ -65,12 +77,10 @@ jobs:
   automerge:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     steps:
-      # Best effort on purpose: if minting fails the script falls back to GITHUB_TOKEN.
-      # A missing app token must never stop PRs merging.
-      - name: Mint deploy-bot app token (best effort)
+      # Hard requirement: a merge by any other identity skips every push-triggered deploy
+      # (emkraan-apps#1798). If minting fails the job fails; nothing merges as GITHUB_TOKEN.
+      - name: Mint deploy-bot app token (required)
         id: app-token
-        if: inputs.app-client-id != ''
-        continue-on-error: true
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ inputs.app-client-id }}
@@ -79,18 +89,21 @@ jobs:
       - uses: actions/github-script@v9
         env:
           FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PRIMARY_IS_APP: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token != null }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         with:
-          github-token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const {owner, repo} = context.repo;
-            const primaryIsApp = process.env.PRIMARY_IS_APP === 'true';
             const fallbackToken = process.env.FALLBACK_TOKEN || '';
+            const appSlug = process.env.APP_SLUG || '';
+            const appLogin = `${appSlug}[bot]`;
             const sleep = ms => new Promise(r => setTimeout(r, ms));
-            core.info(`acting as ${primaryIsApp ? 'deploy-bot app' : 'github-actions'}; workflow="${context.workflow}" run=${context.runId}`);
+            if (!appSlug) { core.setFailed('deploy-bot app token minted without an app slug; refusing to merge as any other identity'); return; }
+            core.info(`acting as ${appLogin}; workflow="${context.workflow}" run=${context.runId}`);
+            let guardFailed = false;
 
-            // Raw fetch as GITHUB_TOKEN. Used for the check rollup (the App token cannot read
-            // checks) and as the retry identity for mutations the App is refused.
+            // Raw fetch as GITHUB_TOKEN. Used ONLY for the check rollup (the App token cannot
+            // read checks). Never for a merge, auto-merge or enqueue mutation.
             async function graphqlAsToken(query, variables) {
               const res = await fetch('https://api.github.com/graphql', {
                 method: 'POST',
@@ -102,17 +115,144 @@ jobs:
               return body.data;
             }
 
-            async function mutate(query, vars, what) {
-              try {
-                await github.graphql(query, vars);
-                core.info(`${what} (as ${primaryIsApp ? 'deploy-bot app' : 'github-actions'})`);
-                return;
-              } catch (e) {
-                if (!primaryIsApp || !fallbackToken) throw e;
-                core.warning(`${what} refused for the app token (${e.message}); retrying as github-actions`);
+            async function restAsToken(method, path, body) {
+              const res = await fetch(`https://api.github.com${path}`, {
+                method,
+                headers: {authorization: `token ${fallbackToken}`, accept: 'application/vnd.github+json', 'content-type': 'application/json', 'user-agent': 'emkraan-automerge'},
+                body: body ? JSON.stringify(body) : undefined,
+              });
+              if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+            }
+
+            // Every mutation runs as the App, always. A transient refusal (another PR merged
+            // between our read and the mutation) is retried as the App after a short wait;
+            // refreshVars re-reads the head oid so the retry is not stale.
+            const TRANSIENT = /base branch was modified|head branch was modified|try the merge again|timeout|was submitted too quickly/i;
+            async function mutate(query, vars, what, refreshVars) {
+              for (let attempt = 1; ; attempt++) {
+                try {
+                  await github.graphql(query, vars);
+                  core.info(`${what} (as ${appLogin})`);
+                  return;
+                } catch (e) {
+                  if (attempt >= 4 || !TRANSIENT.test(e.message)) throw e;
+                  core.info(`${what}: transient refusal (${e.message}); retrying as ${appLogin} (attempt ${attempt + 1})`);
+                  await sleep(5000 * attempt);
+                  if (refreshVars) vars = await refreshVars();
+                }
               }
-              await graphqlAsToken(query, vars);
-              core.info(`${what} (as github-actions; a linked Closes #N will NOT fire)`);
+            }
+
+            // ---- Post-merge guard (emkraan-apps#1798). A merge by any identity other than the
+            // App (in practice github-actions via GITHUB_TOKEN) starts no push workflows, so
+            // dispatch the ones that should have run and fail loudly.
+            function globToRe(g) {
+              let r = '';
+              for (let i = 0; i < g.length; i++) {
+                const c = g[i];
+                if (c === '*' && g[i + 1] === '*') { r += '.*'; i++; if (g[i + 1] === '/') i++; }
+                else if (c === '*') r += '[^/]*';
+                else if (c === '?') r += '[^/]';
+                else r += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+              }
+              return new RegExp(`^${r}$`);
+            }
+            // Minimal reader of a workflow's top-level `on:` block: does it trigger on push to
+            // the default branch, with which path filters, and does it accept workflow_dispatch.
+            function pushTrigger(text, branch) {
+              const lines = text.split('\n');
+              const onIdx = lines.findIndex(l => /^(on|"on"|'on')\s*:/.test(l));
+              if (onIdx < 0) return null;
+              const inline = lines[onIdx].replace(/^[^:]*:\s*/, '').replace(/#.*/, '').trim();
+              if (inline) {
+                const evs = inline.replace(/[\[\]]/g, '').split(',').map(x => x.trim());
+                return evs.includes('push') ? {paths: [], branches: [], dispatch: evs.includes('workflow_dispatch')} : null;
+              }
+              const block = [];
+              for (let i = onIdx + 1; i < lines.length && (/^\s/.test(lines[i]) || lines[i].trim() === ''); i++) block.push(lines[i]);
+              const dispatch = block.some(l => /^\s{1,4}workflow_dispatch\s*:/.test(l));
+              const pi = block.findIndex(l => /^\s{1,4}push\s*:/.test(l));
+              if (pi < 0) return null;
+              const ind = block[pi].match(/^\s*/)[0].length;
+              const sub = [];
+              for (let i = pi + 1; i < block.length; i++) {
+                if (block[i].trim() === '' || /^\s*#/.test(block[i])) continue;
+                if (block[i].match(/^\s*/)[0].length <= ind) break;
+                sub.push(block[i]);
+              }
+              const list = key => {
+                const out = [];
+                const k = sub.findIndex(l => new RegExp(`^\\s*${key}\\s*:`).test(l));
+                if (k < 0) return out;
+                const rest = sub[k].replace(/^[^:]*:\s*/, '').replace(/#.*/, '').trim();
+                if (rest) return rest.replace(/[\[\]]/g, '').split(',').map(x => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+                const kind = sub[k].match(/^\s*/)[0].length;
+                for (let i = k + 1; i < sub.length && sub[i].match(/^\s*/)[0].length > kind; i++) {
+                  const m = sub[i].match(/^\s*-\s*(.+?)\s*(#.*)?$/);
+                  if (m) out.push(m[1].replace(/^["']|["']$/g, ''));
+                }
+                return out;
+              };
+              const branches = list('branches');
+              if (branches.length && !branches.some(b => globToRe(b).test(branch))) return null;
+              return {paths: list('paths'), ignore: list('paths-ignore'), branches, dispatch};
+            }
+            function pathsMatch(t, files) {
+              if (t.ignore && t.ignore.length && files.every(f => t.ignore.some(g => globToRe(g).test(f)))) return false;
+              if (!t.paths.length) return true;
+              return files.some(f => {
+                let hit = false;
+                for (const g of t.paths) {
+                  if (g.startsWith('!')) { if (globToRe(g.slice(1)).test(f)) hit = false; }
+                  else if (globToRe(g).test(f)) hit = true;
+                }
+                return hit;
+              });
+            }
+
+            async function guardMerged(n) {
+              const {data: pr} = await github.rest.pulls.get({owner, repo, pull_number: n});
+              if (!pr.merged) return;
+              const actor = pr.merged_by ? pr.merged_by.login : '(unknown)';
+              if (actor === appLogin) { core.info(`#${n}: merge actor ${actor} verified`); return; }
+              // A human merge (or a merge queue) triggers push workflows normally; only a
+              // GITHUB_TOKEN merge (github-actions[bot]) suppresses them.
+              if (actor !== 'github-actions[bot]') { core.info(`#${n}: merged by ${actor}; push workflows fire normally`); return; }
+              const sha = pr.merge_commit_sha;
+              const branch = pr.base.ref;
+              // Idempotent: skip when a push run already exists for the merge commit, or when a
+              // dispatch run was started after the merge (a previous guard already ran).
+              const runs = (await github.rest.actions.listWorkflowRunsForRepo({owner, repo, head_sha: sha, per_page: 100})).data.workflow_runs;
+              if (runs.some(r => r.event === 'push')) { core.info(`#${n}: merged by ${actor} but push runs exist for ${sha}`); return; }
+              const files = (await github.paginate(github.rest.pulls.listFiles, {owner, repo, pull_number: n, per_page: 100})).map(f => f.filename);
+              const wfs = (await github.paginate(github.rest.actions.listRepoWorkflows, {owner, repo, per_page: 100})).filter(w => w.state === 'active');
+              const dispatched = [], undispatchable = [], failed = [];
+              for (const w of wfs) {
+                let text;
+                try {
+                  const {data} = await github.rest.repos.getContent({owner, repo, path: w.path, ref: sha});
+                  text = Buffer.from(data.content, 'base64').toString('utf8');
+                } catch (e) { continue; }
+                const t = pushTrigger(text, branch);
+                if (!t || !pathsMatch(t, files)) continue;
+                if (!t.dispatch) { undispatchable.push(w.path); continue; }
+                const prior = (await github.rest.actions.listWorkflowRuns({owner, repo, workflow_id: w.id, event: 'workflow_dispatch', created: `>=${pr.merged_at}`, per_page: 1})).data.total_count;
+                if (prior > 0) { core.info(`#${n}: ${w.path} already dispatched since the merge`); continue; }
+                try {
+                  await restAsToken('POST', `/repos/${owner}/${repo}/actions/workflows/${w.id}/dispatches`, {ref: branch});
+                  dispatched.push(w.path);
+                } catch (e) { failed.push(`${w.path} (${e.message})`); }
+              }
+              guardFailed = true;
+              core.error(`#${n} was merged by ${actor}, not ${appLogin}: its merge push ${sha.slice(0, 7)} started NO push workflows (GITHUB_TOKEN loop prevention). ` +
+                `Dispatched on ${branch}: ${dispatched.join(', ') || 'none'}. ` +
+                (undispatchable.length ? `Matching but WITHOUT workflow_dispatch (run by hand): ${undispatchable.join(', ')}. ` : '') +
+                (failed.length ? `Dispatch FAILED (grant the caller actions: write): ${failed.join('; ')}. ` : '') +
+                `Find the path that merged as GITHUB_TOKEN (emkraan-apps#1798).`);
+            }
+            async function safeGuard(n) {
+              try { await guardMerged(n); }
+              catch (e) { guardFailed = true; core.error(`#${n}: post-merge guard could not run (${e.message})`); }
             }
 
             // ---- Merged PR: close linked issues explicitly. GitHub does not honour
@@ -120,6 +260,7 @@ jobs:
             if (context.eventName === 'pull_request' && context.payload.action === 'closed') {
               const pr = context.payload.pull_request;
               if (!pr.merged) { core.info(`#${pr.number}: closed without merging`); return; }
+              await safeGuard(pr.number);
               let linked = [];
               try {
                 const d = await github.graphql(`query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){
@@ -133,6 +274,7 @@ jobs:
                 } catch (e) { core.warning(`#${pr.number}: could not close #${issue.number} (${e.message})`); }
               }
               if (linked.length === 0) core.info(`#${pr.number}: no linked issues`);
+              if (guardFailed) core.setFailed('post-merge guard: see errors above');
               return;
             }
 
@@ -154,8 +296,15 @@ jobs:
               // pending event (e.g. fell out of a merge queue after enqueue).
               const open = await github.paginate(github.rest.pulls.list, {owner, repo, state: 'open', per_page: 100});
               numbers = open.filter(p => !p.draft).map(p => p.number);
+              // Guard sweep: a GITHUB_TOKEN-caused pull_request.closed event starts no run, so
+              // the closed-event guard never sees such a merge. Re-check the last 24h here.
+              const since = Date.now() - 24 * 3600 * 1000;
+              const closed = (await github.rest.pulls.list({owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 50})).data;
+              for (const p of closed.filter(p => p.merged_at && Date.parse(p.merged_at) >= since)) {
+                await safeGuard(p.number);
+              }
             }
-            if (numbers.length === 0) { core.info('no candidate PRs'); return; }
+            if (numbers.length === 0) { core.info('no candidate PRs'); if (guardFailed) core.setFailed('post-merge guard: see errors above'); return; }
 
             const Q = `query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){
               mergeQueue{ id }
@@ -228,17 +377,14 @@ jobs:
                 // masked it: the queue's branch push is by github-merge-queue[bot].) So there is
                 // no GITHUB_TOKEN fallback here: an App-less or App-refused enqueue is skipped
                 // loudly and retried by the next event or sweep.
-                if (!primaryIsApp) {
-                  core.warning(`#${n}: ready but NOT enqueued: no deploy-bot app token, and a GITHUB_TOKEN enqueue forms no merge_group run (the entry would wedge). Fix the app token; the sweep will retry.`);
-                  continue;
-                }
                 try { await github.graphql(ENQUEUE, {id: pr.id}); core.info(`#${n}: enqueued (as deploy-bot app)`); }
                 catch (e) { core.warning(`#${n}: enqueue refused for the deploy-bot app (${e.message}); NOT retrying as GITHUB_TOKEN (it would wedge). The next event or the sweep will retry.`); }
                 continue;
               }
 
+              const refresh = async () => { const f = (await readPr(n)).pr; return {id: f.id, oid: f.headRefOid}; };
               if (r.ready) {
-                try { await mutate(MERGE, {id: pr.id, oid: pr.headRefOid}, `#${n}: merged (${r.why})`); continue; }
+                try { await mutate(MERGE, {id: pr.id, oid: pr.headRefOid}, `#${n}: merged (${r.why})`, refresh); await safeGuard(n); continue; }
                 catch (e) { core.warning(`#${n}: direct merge failed (${e.message}); trying auto-merge`); }
               }
               if (pr.mergeStateStatus === 'DIRTY') { core.warning(`#${n}: DIRTY (merge conflict), needs a rebase`); continue; }
@@ -263,9 +409,10 @@ jobs:
                   if (fresh.state !== 'OPEN' || fresh.merged) { core.info(`#${n}: no longer open`); done = true; break; }
                   if (last === 'DIRTY' || last === 'BLOCKED') break;
                   const fr = await readiness(fresh);
-                  if (fr.ready) { await mutate(MERGE, {id: fresh.id, oid: fresh.headRefOid}, `#${n}: merged after poll (${fr.why})`); done = true; }
+                  if (fr.ready) { await mutate(MERGE, {id: fresh.id, oid: fresh.headRefOid}, `#${n}: merged after poll (${fr.why})`, refresh); await safeGuard(n); done = true; }
                   else last = `${last} (${fr.why})`;
                 } catch (e2) { core.warning(`#${n}: poll ${i + 1} failed (${e2.message})`); }
               }
               if (!done) core.warning(`#${n}: NOT merged; last state ${last}. The next CI completion or the sweep will retry.`);
             }
+            if (guardFailed) core.setFailed('post-merge guard: a PR merged as a non-App identity; see errors above');
