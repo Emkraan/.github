@@ -158,5 +158,6 @@
     ],
     "enabled": true
   },
-  "minimumReleaseAge": "3 days"
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "flexible"
 }
