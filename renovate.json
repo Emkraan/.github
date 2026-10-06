@@ -163,6 +163,22 @@
       "groupName": "npm (non-major)"
     },
     {
+      "description": "CI burst control: npm devDependencies get their own weekly non-major group so it automerges on green CI without waiting on production minors. Placed after the npm (non-major) group so it overrides it for devDependencies. Production non-major groups need no automerge flag in private repos: the Eir github_automerge reconciler merges any CLEAN PR.",
+      "matchCategories": [
+        "js"
+      ],
+      "matchDepTypes": [
+        "devDependencies"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "npm dev (non-major)",
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
       "description": "CI burst control: one weekly non-major PR per ecosystem (python). Placed last so it overrides narrower group names for minor/patch; majors keep their own PRs.",
       "matchCategories": [
         "python"
