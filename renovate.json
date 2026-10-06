@@ -7,14 +7,14 @@
     "mergeConfidence:all-badges"
   ],
   "schedule": [
-    "before 6am"
+    "* 0-5 * * 1"
   ],
   "timezone": "America/New_York",
   "labels": [
     "dependencies"
   ],
-  "prHourlyLimit": 4,
-  "prConcurrentLimit": 8,
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 5,
   "packageRules": [
     {
       "description": "Group and automerge GitHub Actions non-major updates",
@@ -150,13 +150,63 @@
       "addLabels": [
         "renovate-major-infra"
       ]
+    },
+    {
+      "description": "CI burst control: one weekly non-major PR per ecosystem (js). Placed last so it overrides narrower group names for minor/patch; majors keep their own PRs.",
+      "matchCategories": [
+        "js"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "npm (non-major)"
+    },
+    {
+      "description": "CI burst control: one weekly non-major PR per ecosystem (python). Placed last so it overrides narrower group names for minor/patch; majors keep their own PRs.",
+      "matchCategories": [
+        "python"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "python (non-major)"
+    },
+    {
+      "description": "CI burst control: one weekly non-major PR per ecosystem (docker). Placed last so it overrides narrower group names for minor/patch; majors keep their own PRs.",
+      "matchCategories": [
+        "docker"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "docker (non-major)"
+    },
+    {
+      "description": "CI burst control: one weekly non-major PR per ecosystem (ci). Placed last so it overrides narrower group names for minor/patch; majors keep their own PRs.",
+      "matchCategories": [
+        "ci"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "github-actions (non-major)"
     }
   ],
   "vulnerabilityAlerts": {
     "labels": [
       "security"
     ],
-    "enabled": true
+    "enabled": true,
+    "schedule": [
+      "at any time"
+    ],
+    "minimumReleaseAge": null,
+    "prCreation": "immediate",
+    "groupName": null
   },
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "flexible"
