@@ -1,0 +1,26 @@
+name: General issue
+description: Tracking, discussion or a question. No agent will pick this up.
+title: ""
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for anything that should NOT be worked automatically. To route work to an agent, pick the Kratos task or Eir task form instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance (optional)
+      description: What closes this issue, if it is a work item.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and links
