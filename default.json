@@ -7,7 +7,7 @@
     "mergeConfidence:all-badges"
   ],
   "schedule": [
-    "* 0-5 * * 1"
+    "* 0-5 * * *"
   ],
   "timezone": "America/New_York",
   "labels": [
