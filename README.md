@@ -18,7 +18,7 @@ that fleet repos extend:
 
 | Setting | Value |
 |---|---|
-| Schedule | Monday before 6 AM ET |
+| Schedule | Daily before 6 AM ET |
 | PR hourly limit | 4 |
 | PR concurrent limit | 8 |
 | devDependency minor/patch | automerge |
