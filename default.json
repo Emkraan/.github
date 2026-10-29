@@ -136,7 +136,6 @@
         "major"
       ],
       "addLabels": [
-        "renovate-major",
         "gate:renovate-major"
       ]
     },
@@ -149,7 +148,6 @@
         "major"
       ],
       "addLabels": [
-        "renovate-major-infra",
         "gate:renovate-major-infra"
       ]
     },
