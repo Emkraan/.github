@@ -1,12 +1,12 @@
-name: Kratos task
-description: Work for Kratos to pick up (local agent on the operator Mac).
-title: "[Kratos]: "
-labels: ["kratos"]
+name: Agent task
+description: Work for an agent to pick up.
+title: "[Agent]: "
+labels: ["agent:tackle-now"]
 body:
   - type: markdown
     attributes:
       value: |
-        This form applies the `kratos` label, which is what routes the issue to Kratos. Write it so someone with no other context can finish it: the goal, the proof it is done, and any links.
+        This form applies the `agent:tackle-now` label, which is what routes the issue to an agent. Write it so someone with no other context can finish it: the goal, the proof it is done, and any links.
         Do not paste secrets, tokens or credentials into this issue.
 
   - type: textarea
@@ -43,7 +43,7 @@ body:
     id: merge_policy
     attributes:
       label: Merge policy
-      description: Kratos opens a PR from its own worktree. Choose how far it may take it.
+      description: The agent opens a PR from its own worktree. Choose how far it may take it.
       options:
         - Auto-merge on green CI
         - Open the PR and wait for operator sign-off

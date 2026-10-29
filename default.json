@@ -11,7 +11,7 @@
   ],
   "timezone": "America/New_York",
   "labels": [
-    "dependencies"
+    "type:dependencies"
   ],
   "prHourlyLimit": 2,
   "prConcurrentLimit": 5,
@@ -136,7 +136,7 @@
         "major"
       ],
       "addLabels": [
-        "renovate-major"
+        "gate:renovate-major"
       ]
     },
     {
@@ -148,7 +148,7 @@
         "major"
       ],
       "addLabels": [
-        "renovate-major-infra"
+        "gate:renovate-major-infra"
       ]
     },
     {
@@ -198,7 +198,7 @@
   ],
   "vulnerabilityAlerts": {
     "labels": [
-      "security"
+      "area:security"
     ],
     "enabled": true,
     "schedule": [

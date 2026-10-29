@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this for anything that should NOT be worked automatically. To route work to an agent, pick the Kratos task or Eir task form instead.
+        Use this for anything that should NOT be worked automatically. To route work to an agent, pick the Agent task or Eir task form instead.
 
   - type: textarea
     id: description
