@@ -23,7 +23,7 @@ that fleet repos extend:
 | PR concurrent limit | 8 |
 | devDependency minor/patch | automerge |
 | GitHub Actions minor/patch | automerge |
-| Vulnerability alerts | enabled, labeled `security` |
+| Vulnerability alerts | enabled, labeled `area:security` |
 
 Groups: `react-ecosystem`, `vite`, `typescript`, `fastapi-uvicorn`, `github-actions`.
 
