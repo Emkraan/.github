@@ -141,13 +141,14 @@
       ]
     },
     {
-      "description": "Label Node runtime major updates (node-version in workflows, .nvmrc, engines) for the Eir agent-gate (tier 3): Node 25+ dropped corepack and the fleet pins one Node major per repo, so a runtime major is never a blind merge",
+      "description": "Label Node runtime major updates (node-version in workflows, .nvmrc, engines) for the Eir agent-gate (tier 3): Node 25+ dropped corepack and the fleet pins one Node major per repo, so a runtime major is never a blind merge; allowedVersions follows the build-standards-core node-pin (24), raise it only with that pin",
       "matchDatasources": [
         "node-version"
       ],
       "matchUpdateTypes": [
         "major"
       ],
+      "allowedVersions": "<25",
       "automerge": false,
       "addLabels": [
         "gate:renovate-major"
