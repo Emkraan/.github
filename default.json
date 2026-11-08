@@ -223,5 +223,19 @@
     "prCreation": "immediate",
     "groupName": null
   },
-  "minimumReleaseAge": "1 day"
+  "minimumReleaseAge": "1 day",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The ruff CI pin: a literal ruff==X.Y.Z in a workflow file (Apollo python-tooling-standard rule 4). Without this no Renovate manager sees a pin that lives in a workflow, so repos fall behind (emkraan-grafana and emkraan-infra stayed on 0.16.6, homelab-stacks#2364 and #2365).",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "ruff==(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "ruff",
+      "datasourceTemplate": "pypi"
+    }
+  ]
 }
