@@ -241,12 +241,9 @@
     "schedule": [
       "at any time"
     ],
-    "minimumReleaseAge": null,
     "prCreation": "immediate",
     "groupName": null
   },
-  "minimumReleaseAge": "1 day",
-  "internalChecksFilter": "flexible",
   "customManagers": [
     {
       "customType": "regex",
